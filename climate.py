@@ -225,7 +225,8 @@ class IntesisModbusRTU(ClimateEntity):
 
     async def async_set_fan_mode(self, fan_mode):
         """Set new fan mode."""
-        register_value = self.fan_modes.index(fan_mode)
+        register_value = FAN_MODES_MAP.index(fan_mode)
+        _LOGGER.debug(f"Setting fan mode to {fan_mode} ({register_value})")
         if await self._async_write_int16_to_register(2, register_value):
             self._current_fan_mode = fan_mode
             self._async_trigger_refresh_after_change()
