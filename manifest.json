@@ -1,0 +1,11 @@
+{
+  "domain": "intesis_modbusrtu",
+  "name": "Intesis Hitachi-Modbus",
+  "documentation": "https://github.com/phindmarsh/homeassistant-intesis_modbusrtu",
+  "dependencies": ["modbus"],
+  "codeowners": [
+    "@phindmarsh"
+  ],
+  "iot_class": "local_polling",
+  "version": "0.0.1"
+}
