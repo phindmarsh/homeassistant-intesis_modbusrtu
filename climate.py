@@ -26,7 +26,7 @@ from homeassistant.components.modbus.const import (
     CALL_TYPE_REGISTER_HOLDING,
     CALL_TYPE_REGISTER_INPUT,
     CALL_TYPE_WRITE_REGISTER,
-    CONF_HUB,
+    ATTR_HUB,
     DEFAULT_HUB,
 )
 from homeassistant.components.modbus.modbus import ModbusHub
@@ -41,10 +41,11 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.event import async_call_later
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
-        vol.Optional(CONF_HUB, default=DEFAULT_HUB): cv.string,
+        vol.Optional(ATTR_HUB, default=DEFAULT_HUB): cv.string,
         vol.Required(CONF_SLAVE): vol.All(int, vol.Range(min=0, max=32)),
         vol.Optional(CONF_NAME, default=DEVICE_DEFAULT_NAME): cv.string,
     }
@@ -80,7 +81,7 @@ async def async_setup_platform(
     """Set up the Intesis Modbus RTU Platform."""
     modbus_slave = config.get(CONF_SLAVE)
     name = config.get(CONF_NAME)
-    hub = get_hub(hass, config[CONF_HUB])
+    hub = get_hub(hass, config[ATTR_HUB])
     async_add_entities([IntesisModbusRTU(hub, modbus_slave, name)], True)
 
 
@@ -121,7 +122,7 @@ class IntesisModbusRTU(ClimateEntity):
     async def async_update(self):
         """Update unit attributes."""
         _LOGGER.debug("Updating state")
-        result = await self._hub.async_pymodbus_call(
+        result = await self._hub.async_pb_call(
             self._slave, 0, 24, CALL_TYPE_REGISTER_HOLDING
         )
         _LOGGER.debug(result.registers)
@@ -235,7 +236,7 @@ class IntesisModbusRTU(ClimateEntity):
 
     async def _async_write_int16_to_register(self, register, value) -> bool:
         value = int(value)
-        result = await self._hub.async_pymodbus_call(
+        result = await self._hub.async_pb_call(
             self._slave, register, value, CALL_TYPE_WRITE_REGISTER
         )
         if result == -1:
@@ -243,5 +244,4 @@ class IntesisModbusRTU(ClimateEntity):
         return True
 
     def _async_trigger_refresh_after_change(self):
-        time.sleep(1)
         return self.async_schedule_update_ha_state(force_refresh=True)
