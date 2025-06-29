@@ -63,7 +63,7 @@ HVAC_MODES_MAP = [
     HVACMode.COOL,
 ]
 
-FAN_MODES_MAP = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH, "super_high"]
+FAN_MODES_MAP = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH]
 
 
 async def async_setup_platform(
@@ -112,7 +112,7 @@ class IntesisModbusRTU(ClimateEntity):
         self._target_temperature = None
         self._current_temperature = None
         self._current_fan_mode = None
-        self._fan_modes = [FAN_LOW, FAN_MEDIUM, FAN_HIGH]
+        self._fan_modes = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH]
         self._current_hvac_mode = None
         self._hvac_modes = [
             HVACMode.OFF,
