@@ -1,4 +1,5 @@
 """Support for Intesis Modbus RTU gateways, tested with Hitachi."""
+
 from __future__ import annotations
 
 import logging
@@ -8,18 +9,12 @@ import voluptuous as vol
 
 from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateEntity
 from homeassistant.components.climate.const import (
-    HVAC_MODE_OFF,
-    HVAC_MODE_AUTO,
-    HVAC_MODE_HEAT,
-    HVAC_MODE_COOL,
-    HVAC_MODE_DRY,
-    HVAC_MODE_FAN_ONLY,
+    HVACMode,
+    ClimateEntityFeature,
     FAN_AUTO,
     FAN_LOW,
     FAN_MEDIUM,
     FAN_HIGH,
-    SUPPORT_FAN_MODE,
-    SUPPORT_TARGET_TEMPERATURE,
 )
 from homeassistant.components.modbus import get_hub
 from homeassistant.components.modbus.const import (
@@ -35,41 +30,40 @@ from homeassistant.const import (
     CONF_NAME,
     CONF_SLAVE,
     DEVICE_DEFAULT_NAME,
-    TEMP_CELSIUS,
-    PRECISION_WHOLE
+    UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.helpers.event import async_call_later
 
+# Custom configuration constant
+CONF_TEMPERATURE_FACTOR = "temperature_factor"
+
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
         vol.Optional(ATTR_HUB, default=DEFAULT_HUB): cv.string,
         vol.Required(CONF_SLAVE): vol.All(int, vol.Range(min=0, max=32)),
         vol.Optional(CONF_NAME, default=DEVICE_DEFAULT_NAME): cv.string,
+        vol.Optional(CONF_TEMPERATURE_FACTOR, default=1): vol.All(
+            vol.Coerce(float), vol.Range(min=0, min_included=False)
+        ),
     }
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-SUPPORT_FLAGS = SUPPORT_TARGET_TEMPERATURE | SUPPORT_FAN_MODE
+SUPPORT_FLAGS = ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.FAN_MODE
 
 HVAC_MODES_MAP = [
-    HVAC_MODE_AUTO,
-    HVAC_MODE_HEAT,
-    HVAC_MODE_DRY,
-    HVAC_MODE_FAN_ONLY,
-    HVAC_MODE_COOL
+    HVACMode.AUTO,
+    HVACMode.HEAT,
+    HVACMode.DRY,
+    HVACMode.FAN_ONLY,
+    HVACMode.COOL,
 ]
 
-FAN_MODES_MAP = [
-    FAN_AUTO,
-    FAN_LOW,
-    FAN_MEDIUM,
-    FAN_HIGH,
-    'super_high'
-]
+FAN_MODES_MAP = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH]
 
 
 async def async_setup_platform(
@@ -81,8 +75,9 @@ async def async_setup_platform(
     """Set up the Intesis Modbus RTU Platform."""
     modbus_slave = config.get(CONF_SLAVE)
     name = config.get(CONF_NAME)
+    temp_factor = config.get(CONF_TEMPERATURE_FACTOR)
     hub = get_hub(hass, config[ATTR_HUB])
-    async_add_entities([IntesisModbusRTU(hub, modbus_slave, name)], True)
+    async_add_entities([IntesisModbusRTU(hub, modbus_slave, name, temp_factor)], True)
 
 
 class IntesisModbusRTU(ClimateEntity):
@@ -94,25 +89,39 @@ class IntesisModbusRTU(ClimateEntity):
     _attr_target_temperature_step = 1.0
 
     def __init__(
-        self, hub: ModbusHub, modbus_slave: int | None, name: str | None
+        self,
+        hub: ModbusHub,
+        modbus_slave: int | None,
+        name: str | None,
+        temp_factor: float = 1.0,
     ) -> None:
         """Initialize the unit."""
         self._hub = hub
         self._name = name
         self._slave = modbus_slave
+        self._temp_factor = (
+            float(temp_factor) if temp_factor and temp_factor > 0 else 1.0
+        )
+        # Update precision/step based on factor (<1 => finer)
+        if self._temp_factor < 1:
+            self._attr_precision = self._temp_factor
+            self._attr_target_temperature_step = self._temp_factor
+        else:
+            self._attr_precision = 1.0
+            self._attr_target_temperature_step = 1.0
         self._target_temperature = None
         self._current_temperature = None
         self._current_fan_mode = None
-        self._fan_modes = [FAN_LOW, FAN_MEDIUM, FAN_HIGH]
+        self._fan_modes = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH]
         self._current_hvac_mode = None
         self._hvac_modes = [
-            HVAC_MODE_OFF, 
-            HVAC_MODE_HEAT, 
-            HVAC_MODE_COOL, 
-            HVAC_MODE_DRY, 
-            HVAC_MODE_FAN_ONLY
-            ]
-        _LOGGER.debug("Initialised Intesis AC unit")    
+            HVACMode.OFF,
+            HVACMode.HEAT,
+            HVACMode.COOL,
+            HVACMode.DRY,
+            HVACMode.FAN_ONLY,
+        ]
+        _LOGGER.debug("Initialised Intesis AC unit")
 
     @property
     def supported_features(self):
@@ -125,12 +134,17 @@ class IntesisModbusRTU(ClimateEntity):
         result = await self._hub.async_pb_call(
             self._slave, 0, 24, CALL_TYPE_REGISTER_HOLDING
         )
+        # The Modbus call may return None or -1 on communication errors.
+        if not result or result == -1 or not hasattr(result, "registers"):
+            _LOGGER.error("Modbus read failed, skipping state update")
+            return
+
         _LOGGER.debug(result.registers)
 
         state = result.registers
 
-        if(state[0] == 0):
-            self._current_hvac_mode = HVAC_MODE_OFF
+        if state[0] == 0:
+            self._current_hvac_mode = HVACMode.OFF
         else:
             self._current_hvac_mode = HVAC_MODES_MAP[state[1]]
         _LOGGER.debug(f"_current_hvac_mode: {self._current_hvac_mode}")
@@ -138,12 +152,12 @@ class IntesisModbusRTU(ClimateEntity):
         self._current_fan_mode = FAN_MODES_MAP[state[2]]
         _LOGGER.debug(f"_current_fan_mode: {self._current_fan_mode}")
 
-        self._target_temperature = state[4]
+        self._target_temperature = state[4] * self._temp_factor
         _LOGGER.debug(f"_target_temperature: {self._target_temperature}")
 
-        self._current_temperature = state[5]
+        self._current_temperature = state[5] * self._temp_factor
         _LOGGER.debug(f"_current_temperature: {self._current_temperature}")
-        
+
         _LOGGER.debug("Finished updating state")
 
     @property
@@ -159,7 +173,7 @@ class IntesisModbusRTU(ClimateEntity):
     @property
     def temperature_unit(self):
         """Return the unit of measurement."""
-        return TEMP_CELSIUS
+        return UnitOfTemperature.CELSIUS
 
     @property
     def current_temperature(self):
@@ -177,7 +191,7 @@ class IntesisModbusRTU(ClimateEntity):
         return self._current_hvac_mode
 
     @property
-    def hvac_modes(self) -> list[str]:
+    def hvac_modes(self) -> list[HVACMode]:
         """Return the list of available hvac operation modes."""
         return self._hvac_modes
 
@@ -199,18 +213,19 @@ class IntesisModbusRTU(ClimateEntity):
             _LOGGER.error("Received invalid temperature")
             return
 
-        if await self._async_write_int16_to_register(4, target_temperature):
+        register_value = round(target_temperature / self._temp_factor)
+        if await self._async_write_int16_to_register(4, register_value):
             self._target_temperature = target_temperature
             self._async_trigger_refresh_after_change()
         else:
             _LOGGER.error("Modbus error setting target temperature to Intesis")
 
     async def async_set_hvac_mode(self, hvac_mode):
-        if(hvac_mode == HVAC_MODE_OFF):
+        if hvac_mode == HVACMode.OFF:
             await self._async_write_int16_to_register(0, 0)
         else:
             register_value = HVAC_MODES_MAP.index(hvac_mode)
-            if(register_value > 0):
+            if register_value > 0:
                 _LOGGER.debug(f"Setting mode to {hvac_mode} ({register_value})")
                 # set the mode first
                 await self._async_write_int16_to_register(1, register_value)
@@ -219,7 +234,7 @@ class IntesisModbusRTU(ClimateEntity):
             else:
                 _LOGGER.error(f"Invalid hvac_mode {hvac_mode}")
                 return False
-        
+
         _LOGGER.debug(f"Updated mode to {hvac_mode}, refreshing state")
         self._current_hvac_mode = hvac_mode
         self._async_trigger_refresh_after_change()
